@@ -277,3 +277,103 @@ function redraw() {
 
 </script>
   """)
+
+// COMMAND ----------
+
+// MAGIC %sql
+// MAGIC 
+// MAGIC SELECT orderid AS OrderId, orderdate AS OrderDate, customer AS CustomerId,
+// MAGIC     product AS ProductId, billingaddress AS BillingAddress, units AS NoOfUnits,
+// MAGIC     remarks AS OrderRemarks, toSentiment(remarks) AS SentimentScore
+// MAGIC   FROM OrdersDB.RawOrders
+
+// COMMAND ----------
+
+val results = spark.sql("""SELECT orderid AS OrderId, orderdate AS OrderDate, customer AS CustomerId,
+    product AS ProductId, billingaddress AS BillingAddress, units AS NoOfUnits,
+    remarks AS OrderRemarks, toSentiment(remarks) AS SentimentScore
+  FROM OrdersDB.RawOrders""")
+
+// COMMAND ----------
+
+// SQL Datawarehouse
+
+val blobStorage = "iomegastoragev2.blob.core.windows.net"
+val blobContainer = "data"
+val blobAccessKey =  "22le5kRkFF0iaJjBePjSIlqCRY6Kz7LCr3DXaONm9smXFUoTtfVTJXzor7Dq/TSpfNHDIa2MSwQzDqjNenMPJg=="
+
+val tempDir = "wasbs://" + blobContainer + "@" + blobStorage +"/tempDirs"
+val acntInfo = "fs.azure.account.key."+ blobStorage
+
+sc.hadoopConfiguration.set(acntInfo, blobAccessKey)
+
+val dwDatabase = "iomegadwh2"
+val dwServer = "iomegadwsqlserver.database.windows.net"
+val dwUser = "iomegaadmin"
+val dwPass = "admin@123"
+val dwJdbcPort =  "1433"
+val dwJdbcExtraOptions = "encrypt=true;trustServerCertificate=true;hostNameInCertificate=*.database.windows.net;loginTimeout=30;"
+val sqlDwUrl = "jdbc:sqlserver://" + dwServer + ":" + dwJdbcPort + ";database=" + dwDatabase + ";user=" + dwUser+";password=" + dwPass + ";$dwJdbcExtraOptions"
+val sqlDwUrlSmall = "jdbc:sqlserver://" + dwServer + ":" + dwJdbcPort + ";database=" + dwDatabase + ";user=" + dwUser+";password=" + dwPass
+
+spark.conf.set("spark.sql.parquet.writeLegacyFormat","true")
+
+results
+	.write
+	.format("com.databricks.spark.sqldw")
+	.option("url", sqlDwUrlSmall)
+	.option("dbtable", "ProcessedOrders")       
+	.option( "forward_spark_azure_storage_credentials","True")
+	.option("tempdir", tempDir)
+	.mode("overwrite")
+	.save()
+	
+
+
+// COMMAND ----------
+
+// Cosmos DB Integration
+
+import com.microsoft.azure.cosmosdb.spark.schema._
+import com.microsoft.azure.cosmosdb.spark._
+import com.microsoft.azure.cosmosdb.spark.config.Config
+
+// COMMAND ----------
+
+val readConfig = Config(Map(
+  "Endpoint" -> "https://iomegacosmosv2.documents.azure.com:443/",
+  "Masterkey" -> "QWqFDS3YlbdvEEnCIkOwcWl4x0DakzDwiEk71z45aROrmHySjcgejxJkdeDr0EHViQYUrFDN1ZBsuWAGBgkZ5w==",
+  "Database" -> "ordersystemdb",
+  "Collection" -> "container1",
+  "query_custom" -> "SELECT * FROM c"
+))
+
+val orders = spark.read.cosmosDB(readConfig)
+
+// COMMAND ----------
+
+display(orders)
+
+// COMMAND ----------
+
+// MAGIC %sql
+// MAGIC 
+// MAGIC SELECT * FROM OrdersDB.RawOrders
+
+// COMMAND ----------
+
+val rawOrders = spark.sql("SELECT orderid AS OrderId, orderdate, customer, product, billingaddress AS BillingAddress, units, remarks FROM OrdersDB.RawOrders")
+
+// COMMAND ----------
+
+import org.apache.spark.sql.SaveMode
+
+val writeConfig = Config(Map(
+  "Endpoint" -> "https://iomegacosmosv2.documents.azure.com:443/",
+  "Masterkey" -> "QWqFDS3YlbdvEEnCIkOwcWl4x0DakzDwiEk71z45aROrmHySjcgejxJkdeDr0EHViQYUrFDN1ZBsuWAGBgkZ5w==",
+  "Database" -> "ordersystemdb",
+  "Collection" -> "container1",
+  "Upsert" -> "true"
+))
+
+rawOrders.write.mode(SaveMode.Overwrite).cosmosDB(writeConfig)
